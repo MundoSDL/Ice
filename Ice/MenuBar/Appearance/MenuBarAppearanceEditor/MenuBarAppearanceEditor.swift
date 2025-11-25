@@ -135,6 +135,7 @@ private struct UnlabeledPartialEditor: View {
     var body: some View {
         IceSection {
             tintPicker
+            mouseGradientToggle
             shadowToggle
         }
         IceSection {
@@ -149,7 +150,7 @@ private struct UnlabeledPartialEditor: View {
         IceLabeledContent("Tint") {
             HStack {
                 IcePicker("Tint", selection: $configuration.tintKind) {
-                    ForEach(MenuBarTintKind.allCases) { tintKind in
+                    ForEach(MenuBarTintKind.allCases.filter { $0 != .mouseGradient }) { tintKind in
                         Text(tintKind.localized).tag(tintKind)
                     }
                 }
@@ -164,7 +165,7 @@ private struct UnlabeledPartialEditor: View {
                         supportsOpacity: false,
                         mode: .crayon
                     )
-                case .gradient:
+                case .gradient, .mouseGradient:
                     CustomGradientPicker(
                         gradient: $configuration.tintGradient,
                         supportsOpacity: false,
@@ -174,6 +175,22 @@ private struct UnlabeledPartialEditor: View {
                 }
             }
             .frame(height: 24)
+        }
+    }
+
+    @ViewBuilder
+    private var mouseGradientToggle: some View {
+        if configuration.tintKind == .gradient || configuration.tintKind == .mouseGradient {
+            Toggle(
+                "Follow mouse with gradient",
+                isOn: Binding(
+                    get: { configuration.tintKind == .mouseGradient },
+                    set: { newValue in
+                        configuration.tintKind = newValue ? .mouseGradient : .gradient
+                    }
+                )
+            )
+            .annotation("Gradient colors shift to follow your mouse position")
         }
     }
 

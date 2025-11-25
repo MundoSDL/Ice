@@ -57,6 +57,10 @@ final class MenuBarOverlayPanel: NSPanel {
     /// A Boolean value that indicates whether the user is dragging a menu bar item.
     @Published var isDraggingMenuBarItem = false
 
+    /// The current mouse location within the menu bar, normalized to 0-1 range.
+    /// This is used for mouse-tracking gradient effects.
+    @Published private(set) var mouseLocationNormalized: CGFloat = 0.5
+
     /// Flags representing the components of the panel currently in need of an update.
     @Published private(set) var updateFlags = Set<UpdateFlag>()
 
@@ -243,12 +247,52 @@ final class MenuBarOverlayPanel: NSPanel {
                 .store(in: &c)
         }
 
+        // Track mouse movement for mouse gradient effect
+        // Throttle to avoid performance issues from frequent mouse move events
+        UniversalEventMonitor.publisher(for: .mouseMoved)
+            .throttle(for: .milliseconds(16), scheduler: DispatchQueue.main, latest: true) // ~60fps
+            .sink { [weak self] _ in
+                self?.updateMouseLocation()
+            }
+            .store(in: &c)
+
         cancellables = c
     }
+
+    // MARK: - Mouse Gradient Constants
+    
+    /// Threshold for updating mouse position (1% of screen width)
+    private static let mousePositionUpdateThreshold: CGFloat = 0.01
 
     /// Inserts the given update flag into the panel's current list of update flags.
     private func insertUpdateFlag(_ flag: UpdateFlag) {
         updateFlags.insert(flag)
+    }
+
+    /// Updates the normalized mouse location based on the current mouse position.
+    /// The location is normalized to a 0-1 range across the screen width.
+    private func updateMouseLocation() {
+        guard let mouseLocation = MouseCursor.locationAppKit else {
+            return
+        }
+        
+        let screenFrame = owningScreen.frame
+        
+        // Check if mouse is within the screen bounds
+        guard screenFrame.contains(mouseLocation) else {
+            return
+        }
+        
+        // Normalize the x position to 0-1 range
+        let normalizedX = (mouseLocation.x - screenFrame.minX) / screenFrame.width
+        
+        // Clamp to valid range
+        let clampedX = max(0, min(1, normalizedX))
+        
+        // Only update if the value has changed significantly to avoid unnecessary redraws
+        if abs(mouseLocationNormalized - clampedX) > Self.mousePositionUpdateThreshold {
+            mouseLocationNormalized = clampedX
+        }
     }
 
     /// Performs validation for the given validation kind. Returns the panel's
@@ -443,6 +487,16 @@ private final class MenuBarOverlayPanelContentView: NSView {
             overlayPanel.$desktopWallpaper
                 .sink { [weak self] _ in
                     self?.needsDisplay = true
+                }
+                .store(in: &c)
+            // Redraw whenever the mouse location changes (for mouse gradient effect).
+            overlayPanel.$mouseLocationNormalized
+                .sink { [weak self] _ in
+                    guard let self else { return }
+                    // Only redraw if mouse gradient is enabled
+                    if self.configuration.tintKind == .mouseGradient {
+                        self.needsDisplay = true
+                    }
                 }
                 .store(in: &c)
         }
@@ -640,7 +694,86 @@ private final class MenuBarOverlayPanelContentView: NSView {
             if let tintGradient = configuration.tintGradient.withAlphaComponent(0.2).nsGradient {
                 tintGradient.draw(in: rect, angle: 0)
             }
+        case .mouseGradient:
+            drawMouseGradient(in: rect)
         }
+    }
+
+    /// How far the "spotlight" effect spreads around the mouse position (as a fraction of screen width)
+    private static let mouseGradientSpread: CGFloat = 0.2
+    
+    /// Margin from edges to avoid gradient position issues
+    private static let gradientEdgeMargin: CGFloat = 0.01
+
+    /// Draws a gradient that follows the mouse position.
+    private func drawMouseGradient(in rect: CGRect) {
+        guard let overlayPanel else { return }
+        
+        // Get the current mouse position normalized (0-1)
+        let mouseX = overlayPanel.mouseLocationNormalized
+        
+        // Get the gradient colors from the configuration
+        let gradientWithAlpha = configuration.tintGradient.withAlphaComponent(0.2)
+        
+        // Sample colors from the user's gradient
+        guard let startCGColor = gradientWithAlpha.color(at: 0),
+              let endCGColor = gradientWithAlpha.color(at: 1) else {
+            return
+        }
+        
+        let startColor = NSColor(cgColor: startCGColor) ?? .clear
+        let endColor = NSColor(cgColor: endCGColor) ?? .clear
+        
+        // Get the color at the mouse position
+        let mouseColorCG = gradientWithAlpha.color(at: mouseX) ?? startCGColor
+        let mouseColor = NSColor(cgColor: mouseColorCG) ?? startColor
+        
+        let spread = Self.mouseGradientSpread
+        let edgeMargin = Self.gradientEdgeMargin
+        let maxPosition = 1 - edgeMargin
+        
+        // Build color stops array dynamically to avoid ordering issues
+        var colorStops: [(NSColor, CGFloat)] = []
+        
+        // Always add start color at position 0
+        colorStops.append((startColor, 0))
+        
+        // Add the "spotlight" region around the mouse position
+        let leftBound = max(edgeMargin, mouseX - spread)
+        let rightBound = min(maxPosition, mouseX + spread)
+        
+        // Only add left bound if it's after the edge margin
+        if leftBound > edgeMargin {
+            colorStops.append((mouseColor, leftBound))
+        }
+        
+        // Add mouse position if it's not at the edges
+        if mouseX > edgeMargin && mouseX < maxPosition {
+            colorStops.append((mouseColor, mouseX))
+        }
+        
+        // Only add right bound if it's before the max position
+        if rightBound < maxPosition {
+            colorStops.append((mouseColor, rightBound))
+        }
+        
+        // Always add end color at position 1
+        colorStops.append((endColor, 1))
+        
+        // Sort by position to ensure proper ordering
+        colorStops.sort { $0.1 < $1.1 }
+        
+        // Create the gradient using the array-based initializer
+        let colors = colorStops.map { $0.0 }
+        var locations = colorStops.map { $0.1 }
+        
+        let shiftedGradient = NSGradient(
+            colors: colors,
+            atLocations: &locations,
+            colorSpace: .sRGB
+        )
+        
+        shiftedGradient?.draw(in: rect, angle: 0)
     }
 
     override func draw(_ dirtyRect: NSRect) {

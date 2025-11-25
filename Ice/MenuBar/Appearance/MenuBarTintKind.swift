@@ -13,6 +13,8 @@ enum MenuBarTintKind: Int, CaseIterable, Codable, Identifiable {
     case solid = 1
     /// The menu bar is tinted with a gradient.
     case gradient = 2
+    /// The menu bar is tinted with a gradient that follows mouse hover.
+    case mouseGradient = 3
 
     var id: Int { rawValue }
 
@@ -22,6 +24,7 @@ enum MenuBarTintKind: Int, CaseIterable, Codable, Identifiable {
         case .none: "None"
         case .solid: "Solid"
         case .gradient: "Gradient"
+        case .mouseGradient: "Mouse Gradient"
         }
     }
 }
