@@ -248,8 +248,9 @@ final class MenuBarOverlayPanel: NSPanel {
         }
 
         // Track mouse movement for mouse gradient effect
+        // Throttle to avoid performance issues from frequent mouse move events
         UniversalEventMonitor.publisher(for: .mouseMoved)
-            .receive(on: DispatchQueue.main)
+            .throttle(for: .milliseconds(16), scheduler: DispatchQueue.main, latest: true) // ~60fps
             .sink { [weak self] _ in
                 self?.updateMouseLocation()
             }
@@ -257,6 +258,11 @@ final class MenuBarOverlayPanel: NSPanel {
 
         cancellables = c
     }
+
+    // MARK: - Mouse Gradient Constants
+    
+    /// Threshold for updating mouse position (1% of screen width)
+    private static let mousePositionUpdateThreshold: CGFloat = 0.01
 
     /// Inserts the given update flag into the panel's current list of update flags.
     private func insertUpdateFlag(_ flag: UpdateFlag) {
@@ -284,8 +290,7 @@ final class MenuBarOverlayPanel: NSPanel {
         let clampedX = max(0, min(1, normalizedX))
         
         // Only update if the value has changed significantly to avoid unnecessary redraws
-        // Using 0.01 (1% of screen width) as threshold for better performance
-        if abs(mouseLocationNormalized - clampedX) > 0.01 {
+        if abs(mouseLocationNormalized - clampedX) > Self.mousePositionUpdateThreshold {
             mouseLocationNormalized = clampedX
         }
     }
@@ -694,6 +699,12 @@ private final class MenuBarOverlayPanelContentView: NSView {
         }
     }
 
+    /// How far the "spotlight" effect spreads around the mouse position (as a fraction of screen width)
+    private static let mouseGradientSpread: CGFloat = 0.2
+    
+    /// Margin from edges to avoid gradient position issues
+    private static let gradientEdgeMargin: CGFloat = 0.01
+
     /// Draws a gradient that follows the mouse position.
     private func drawMouseGradient(in rect: CGRect) {
         guard let overlayPanel else { return }
@@ -717,9 +728,9 @@ private final class MenuBarOverlayPanelContentView: NSView {
         let mouseColorCG = gradientWithAlpha.color(at: mouseX) ?? startCGColor
         let mouseColor = NSColor(cgColor: mouseColorCG) ?? startColor
         
-        // Calculate gradient stop positions that shift based on mouse position
-        // The effect creates a "spotlight" where the mouse color spreads around the cursor
-        let spread: CGFloat = 0.2
+        let spread = Self.mouseGradientSpread
+        let edgeMargin = Self.gradientEdgeMargin
+        let maxPosition = 1 - edgeMargin
         
         // Build color stops array dynamically to avoid ordering issues
         var colorStops: [(NSColor, CGFloat)] = []
@@ -728,21 +739,21 @@ private final class MenuBarOverlayPanelContentView: NSView {
         colorStops.append((startColor, 0))
         
         // Add the "spotlight" region around the mouse position
-        let leftBound = max(0.01, mouseX - spread)
-        let rightBound = min(0.99, mouseX + spread)
+        let leftBound = max(edgeMargin, mouseX - spread)
+        let rightBound = min(maxPosition, mouseX + spread)
         
-        // Only add left bound if it's after position 0
-        if leftBound > 0.01 {
+        // Only add left bound if it's after the edge margin
+        if leftBound > edgeMargin {
             colorStops.append((mouseColor, leftBound))
         }
         
         // Add mouse position if it's not at the edges
-        if mouseX > 0.01 && mouseX < 0.99 {
+        if mouseX > edgeMargin && mouseX < maxPosition {
             colorStops.append((mouseColor, mouseX))
         }
         
-        // Only add right bound if it's before position 1
-        if rightBound < 0.99 {
+        // Only add right bound if it's before the max position
+        if rightBound < maxPosition {
             colorStops.append((mouseColor, rightBound))
         }
         
@@ -752,28 +763,15 @@ private final class MenuBarOverlayPanelContentView: NSView {
         // Sort by position to ensure proper ordering
         colorStops.sort { $0.1 < $1.1 }
         
-        // Create the gradient
-        let shiftedGradient: NSGradient?
-        switch colorStops.count {
-        case 2:
-            shiftedGradient = NSGradient(
-                colorsAndLocations: colorStops[0], colorStops[1]
-            )
-        case 3:
-            shiftedGradient = NSGradient(
-                colorsAndLocations: colorStops[0], colorStops[1], colorStops[2]
-            )
-        case 4:
-            shiftedGradient = NSGradient(
-                colorsAndLocations: colorStops[0], colorStops[1], colorStops[2], colorStops[3]
-            )
-        case 5:
-            shiftedGradient = NSGradient(
-                colorsAndLocations: colorStops[0], colorStops[1], colorStops[2], colorStops[3], colorStops[4]
-            )
-        default:
-            shiftedGradient = gradientWithAlpha.nsGradient
-        }
+        // Create the gradient using the array-based initializer
+        let colors = colorStops.map { $0.0 }
+        var locations = colorStops.map { $0.1 }
+        
+        let shiftedGradient = NSGradient(
+            colors: colors,
+            atLocations: &locations,
+            colorSpace: .sRGB
+        )
         
         shiftedGradient?.draw(in: rect, angle: 0)
     }
