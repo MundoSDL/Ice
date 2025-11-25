@@ -284,7 +284,8 @@ final class MenuBarOverlayPanel: NSPanel {
         let clampedX = max(0, min(1, normalizedX))
         
         // Only update if the value has changed significantly to avoid unnecessary redraws
-        if abs(mouseLocationNormalized - clampedX) > 0.001 {
+        // Using 0.01 (1% of screen width) as threshold for better performance
+        if abs(mouseLocationNormalized - clampedX) > 0.01 {
             mouseLocationNormalized = clampedX
         }
     }
@@ -703,34 +704,76 @@ private final class MenuBarOverlayPanelContentView: NSView {
         // Get the gradient colors from the configuration
         let gradientWithAlpha = configuration.tintGradient.withAlphaComponent(0.2)
         
-        // Create a radial-like effect by having the gradient color intensity
-        // follow the mouse position. We'll create a gradient that's centered
-        // around the mouse position.
-        let leftColor: NSColor
-        let centerColor: NSColor
-        let rightColor: NSColor
-        
-        // Get colors from the gradient at different positions
-        if let leftCGColor = gradientWithAlpha.color(at: 0),
-           let centerCGColor = gradientWithAlpha.color(at: 0.5),
-           let rightCGColor = gradientWithAlpha.color(at: 1) {
-            leftColor = NSColor(cgColor: leftCGColor) ?? .clear
-            centerColor = NSColor(cgColor: centerCGColor) ?? .clear
-            rightColor = NSColor(cgColor: rightCGColor) ?? .clear
-        } else {
-            // Fallback to default colors
-            leftColor = .white.withAlphaComponent(0.2)
-            centerColor = .gray.withAlphaComponent(0.2)
-            rightColor = .black.withAlphaComponent(0.2)
+        // Sample colors from the user's gradient
+        guard let startCGColor = gradientWithAlpha.color(at: 0),
+              let endCGColor = gradientWithAlpha.color(at: 1) else {
+            return
         }
         
-        // Create a gradient that shifts based on mouse position
-        // The effect is that colors "follow" the mouse
-        let shiftedGradient = NSGradient(
-            colorsAndLocations: (leftColor, max(0, mouseX - 0.5)),
-                               (centerColor, mouseX),
-                               (rightColor, min(1, mouseX + 0.5))
-        )
+        let startColor = NSColor(cgColor: startCGColor) ?? .clear
+        let endColor = NSColor(cgColor: endCGColor) ?? .clear
+        
+        // Get the color at the mouse position
+        let mouseColorCG = gradientWithAlpha.color(at: mouseX) ?? startCGColor
+        let mouseColor = NSColor(cgColor: mouseColorCG) ?? startColor
+        
+        // Calculate gradient stop positions that shift based on mouse position
+        // The effect creates a "spotlight" where the mouse color spreads around the cursor
+        let spread: CGFloat = 0.2
+        
+        // Build color stops array dynamically to avoid ordering issues
+        var colorStops: [(NSColor, CGFloat)] = []
+        
+        // Always add start color at position 0
+        colorStops.append((startColor, 0))
+        
+        // Add the "spotlight" region around the mouse position
+        let leftBound = max(0.01, mouseX - spread)
+        let rightBound = min(0.99, mouseX + spread)
+        
+        // Only add left bound if it's after position 0
+        if leftBound > 0.01 {
+            colorStops.append((mouseColor, leftBound))
+        }
+        
+        // Add mouse position if it's not at the edges
+        if mouseX > 0.01 && mouseX < 0.99 {
+            colorStops.append((mouseColor, mouseX))
+        }
+        
+        // Only add right bound if it's before position 1
+        if rightBound < 0.99 {
+            colorStops.append((mouseColor, rightBound))
+        }
+        
+        // Always add end color at position 1
+        colorStops.append((endColor, 1))
+        
+        // Sort by position to ensure proper ordering
+        colorStops.sort { $0.1 < $1.1 }
+        
+        // Create the gradient
+        let shiftedGradient: NSGradient?
+        switch colorStops.count {
+        case 2:
+            shiftedGradient = NSGradient(
+                colorsAndLocations: colorStops[0], colorStops[1]
+            )
+        case 3:
+            shiftedGradient = NSGradient(
+                colorsAndLocations: colorStops[0], colorStops[1], colorStops[2]
+            )
+        case 4:
+            shiftedGradient = NSGradient(
+                colorsAndLocations: colorStops[0], colorStops[1], colorStops[2], colorStops[3]
+            )
+        case 5:
+            shiftedGradient = NSGradient(
+                colorsAndLocations: colorStops[0], colorStops[1], colorStops[2], colorStops[3], colorStops[4]
+            )
+        default:
+            shiftedGradient = gradientWithAlpha.nsGradient
+        }
         
         shiftedGradient?.draw(in: rect, angle: 0)
     }
