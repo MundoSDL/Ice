@@ -57,6 +57,10 @@ final class MenuBarOverlayPanel: NSPanel {
     /// A Boolean value that indicates whether the user is dragging a menu bar item.
     @Published var isDraggingMenuBarItem = false
 
+    /// The current mouse location within the menu bar, normalized to 0-1 range.
+    /// This is used for mouse-tracking gradient effects.
+    @Published private(set) var mouseLocationNormalized: CGFloat = 0.5
+
     /// Flags representing the components of the panel currently in need of an update.
     @Published private(set) var updateFlags = Set<UpdateFlag>()
 
@@ -243,12 +247,46 @@ final class MenuBarOverlayPanel: NSPanel {
                 .store(in: &c)
         }
 
+        // Track mouse movement for mouse gradient effect
+        UniversalEventMonitor.publisher(for: .mouseMoved)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.updateMouseLocation()
+            }
+            .store(in: &c)
+
         cancellables = c
     }
 
     /// Inserts the given update flag into the panel's current list of update flags.
     private func insertUpdateFlag(_ flag: UpdateFlag) {
         updateFlags.insert(flag)
+    }
+
+    /// Updates the normalized mouse location based on the current mouse position.
+    /// The location is normalized to a 0-1 range across the screen width.
+    private func updateMouseLocation() {
+        guard let mouseLocation = MouseCursor.locationAppKit else {
+            return
+        }
+        
+        let screenFrame = owningScreen.frame
+        
+        // Check if mouse is within the screen bounds
+        guard screenFrame.contains(mouseLocation) else {
+            return
+        }
+        
+        // Normalize the x position to 0-1 range
+        let normalizedX = (mouseLocation.x - screenFrame.minX) / screenFrame.width
+        
+        // Clamp to valid range
+        let clampedX = max(0, min(1, normalizedX))
+        
+        // Only update if the value has changed significantly to avoid unnecessary redraws
+        if abs(mouseLocationNormalized - clampedX) > 0.001 {
+            mouseLocationNormalized = clampedX
+        }
     }
 
     /// Performs validation for the given validation kind. Returns the panel's
@@ -443,6 +481,16 @@ private final class MenuBarOverlayPanelContentView: NSView {
             overlayPanel.$desktopWallpaper
                 .sink { [weak self] _ in
                     self?.needsDisplay = true
+                }
+                .store(in: &c)
+            // Redraw whenever the mouse location changes (for mouse gradient effect).
+            overlayPanel.$mouseLocationNormalized
+                .sink { [weak self] _ in
+                    guard let self else { return }
+                    // Only redraw if mouse gradient is enabled
+                    if self.configuration.tintKind == .mouseGradient {
+                        self.needsDisplay = true
+                    }
                 }
                 .store(in: &c)
         }
@@ -640,7 +688,51 @@ private final class MenuBarOverlayPanelContentView: NSView {
             if let tintGradient = configuration.tintGradient.withAlphaComponent(0.2).nsGradient {
                 tintGradient.draw(in: rect, angle: 0)
             }
+        case .mouseGradient:
+            drawMouseGradient(in: rect)
         }
+    }
+
+    /// Draws a gradient that follows the mouse position.
+    private func drawMouseGradient(in rect: CGRect) {
+        guard let overlayPanel else { return }
+        
+        // Get the current mouse position normalized (0-1)
+        let mouseX = overlayPanel.mouseLocationNormalized
+        
+        // Get the gradient colors from the configuration
+        let gradientWithAlpha = configuration.tintGradient.withAlphaComponent(0.2)
+        
+        // Create a radial-like effect by having the gradient color intensity
+        // follow the mouse position. We'll create a gradient that's centered
+        // around the mouse position.
+        let leftColor: NSColor
+        let centerColor: NSColor
+        let rightColor: NSColor
+        
+        // Get colors from the gradient at different positions
+        if let leftCGColor = gradientWithAlpha.color(at: 0),
+           let centerCGColor = gradientWithAlpha.color(at: 0.5),
+           let rightCGColor = gradientWithAlpha.color(at: 1) {
+            leftColor = NSColor(cgColor: leftCGColor) ?? .clear
+            centerColor = NSColor(cgColor: centerCGColor) ?? .clear
+            rightColor = NSColor(cgColor: rightCGColor) ?? .clear
+        } else {
+            // Fallback to default colors
+            leftColor = .white.withAlphaComponent(0.2)
+            centerColor = .gray.withAlphaComponent(0.2)
+            rightColor = .black.withAlphaComponent(0.2)
+        }
+        
+        // Create a gradient that shifts based on mouse position
+        // The effect is that colors "follow" the mouse
+        let shiftedGradient = NSGradient(
+            colorsAndLocations: (leftColor, max(0, mouseX - 0.5)),
+                               (centerColor, mouseX),
+                               (rightColor, min(1, mouseX + 0.5))
+        )
+        
+        shiftedGradient?.draw(in: rect, angle: 0)
     }
 
     override func draw(_ dirtyRect: NSRect) {

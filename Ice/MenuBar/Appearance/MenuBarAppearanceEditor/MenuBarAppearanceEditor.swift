@@ -164,7 +164,7 @@ private struct UnlabeledPartialEditor: View {
                         supportsOpacity: false,
                         mode: .crayon
                     )
-                case .gradient:
+                case .gradient, .mouseGradient:
                     CustomGradientPicker(
                         gradient: $configuration.tintGradient,
                         supportsOpacity: false,
